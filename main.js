@@ -1,3 +1,4 @@
+/*
 window.requestFileSystem  = window.requestFileSystem  || window.webkitRequestFileSystem ;
 
 var pfm = new PetaFileManager();
@@ -29,3 +30,5 @@ $(window).ready(function()
 	
 	
 });
+
+*/

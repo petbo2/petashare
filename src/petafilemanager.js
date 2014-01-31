@@ -1,7 +1,6 @@
-function PetaFileManager(options)
+function PetaFileManager($rootScope, $q)
 {
 	
-	this._options = {};
 	
 	this.useFs = false;
 	
@@ -15,15 +14,14 @@ function PetaFileManager(options)
 	
 	this.chunks = [];
 	
+	this._ownWantedChunks = [];
+	
 		
-	this.init = function(options)
+	this.init = function($rootScope, $q)
 	{
 		var self = this;
 		
-		// merge options
-		$.extend(this._options, options);
 		
-		// TODO: check for FireFox
 		if(false /*navigator.webkitPersistentStorage != undefined*/)
 		{
 			
@@ -45,19 +43,6 @@ function PetaFileManager(options)
 				
 				self.getChunkList();
 				
-				/*
-				var f = new PetaFile(fs);
-				
-				//"eddc70aa86c7b2ccaaf1fd1c61abe74f94887db8aed586d378036642c99efd01", 5ec09e2113f36df0d525f5520c51e82808b74def52ac8c83fe158e6e818bedc8		
-				$.when(f.loadFromKeystone("eddc70aa86c7b2ccaaf1fd1c61abe74f94887db8aed586d378036642c99efd01","abcdefghijklmnopqrstuvwxyz")).then($.proxy(f.writeOutFile, f)).done(function()
-				{
-					console.log(f);
-					
-					console.log("Write out successful!");
-				
-				});
-				
-				*/	
 			}
 			
 			function errorHandler(event)
@@ -69,7 +54,6 @@ function PetaFileManager(options)
 		}
 		else
 		{
-			// TODO: add database code
 			
 			this._db =  new ydn.db.Storage('petashare');
 			
@@ -77,12 +61,15 @@ function PetaFileManager(options)
 			{
 				self.useDB = true;
 				
-				self.getChunkList();
+				$.when(self.getChunkList(), self.getAllFiles()).then($.proxy(self.getOwnWantedChunks,self)).done(function()
+				{
+					$(window).trigger("petashare.load");
+					
+					$rootScope.$apply();
+				});
 			
 			});
 		}
-		
-		
 		
 	};
 	
@@ -143,7 +130,7 @@ function PetaFileManager(options)
 							
 							});
 							
-							deferObj.resolve(entries.sort());
+							deferObj.resolve(entries);
 							self.chunks = entries;
 							return;
 						}
@@ -234,14 +221,85 @@ function PetaFileManager(options)
 				
 				if(outStandingFiles == 0)
 				{
-					self.getChunkList();
+					$.when(self.getChunkList(), self.getAllFiles()).done(function()
+					{
+						$rootScope.$apply();
+					
+					});
 				}
 			
 			});
 			
 			this.files.push(f);
+			
 		}
 	
+		$rootScope.$apply();
+	};
+	
+	
+	this.addWantedFile = function(hash, key)
+	{
+		var self = this;
+		var f = new PetaFile(this._fs, this._db);
+		
+		f.keystoneHash = hash;
+		f.setKey(key);
+		
+		// can we load from keystone?
+		return $q.when(f.loadFromKeystone()).then($.proxy(f.saveMeta,f), $.proxy(f.saveMeta,f)).then(function()
+		{
+			self.files.push(f);
+		});		
+	
+	};
+	
+	
+	this.getOwnWantedChunks = function()
+	{
+		var self = this;
+		
+		var deferObj = $q.defer();
+		
+		self._ownWantedChunks = [];
+		
+		if(self.files.length == 0)
+		{
+			deferObj.resolve([]);
+			return [];
+		}
+		
+		$.when(self.getChunkList()).done(function(availChunks)
+		{
+			// now see what chunks we want for each file
+			for(var i = 0, l = self.files.length; i < l; i++)
+			{
+				if(self.files[i].mode != "UPLOAD")
+				{
+					var c = self.files[i].getOutstandingChunks(availChunks);
+					
+					if(c === false)
+					{	
+						console.log("Error when getting chunks:", self.files[i], availChunks);
+					}
+					
+					if($.isArray(c))
+					{
+						$.merge(self._ownWantedChunks, c);
+					}
+					
+				}
+				
+			}
+			
+			deferObj.resolve(self._ownWantedChunks);
+			
+			return;
+			
+		});
+		
+		
+		return deferObj.promise;
 	
 	};
 	
@@ -257,12 +315,38 @@ function PetaFileManager(options)
 		
 			self._db.values('files').done(function(items)
 			{
-				if($.isArray(items))
-					self.files = items;
-				else
-					self.files = [];
+				self.files = [];
 				
-				deferObj.resolve(self.files);
+				if($.isArray(items))
+				{
+					var todo = items.length;
+					
+					for(var i = 0, l = items.length; i < l; i++)
+					{
+						var f = new PetaFile(self._fs, self._db);
+						f.keystoneHash = items[i].keystoneHash;
+						f.setKey(items[i].key);
+						self.files.push(f);
+						
+						$.when(f.loadFromKeystone()).done(function()
+						{
+							todo--;
+							
+							if(todo < 1)
+							{
+								deferObj.resolve(self.files);
+							}
+						
+						});
+						
+					}
+				}
+				else
+				{
+				
+					deferObj.resolve(self.files);
+				}
+				
 				
 			}).fail(function(error)
 			{
@@ -274,5 +358,6 @@ function PetaFileManager(options)
 	
 	};
 
-	this.init(options);
+	this.init($rootScope, $q);
 }
+

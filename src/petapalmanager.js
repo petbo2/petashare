@@ -1,6 +1,6 @@
 var peer = new Peer(null, {host: '192.168.0.16', port: 9000, debug: false});
 
-function PetaPalManager(options, fileManager)
+function PetaPalManager($rootScope, $q, fileManager)
 {
 	this._petaPals = [];
 	
@@ -11,9 +11,7 @@ function PetaPalManager(options, fileManager)
 	this.peerStatus = "CLOSED";
 	
 	this._wantedChunks = [];
-	
-	this._userWantedChunks = [];
-	
+
 	this._fileManager = null;
 		
 	this.loadPetaPalsFromServer = function()
@@ -143,9 +141,13 @@ function PetaPalManager(options, fileManager)
 		// get rid of broken connections
 		this.cullClosedPetaPals();
 		
+		// get wanted chunks
+		
+		
 		// for each pal, send file or do something
 		for(var i = 0, l = this._petaPals.length; i < l; i++)
 		{
+		
 			// send data - either a wanted chunked, or a random chunk TODO
 			$.when(self._fileManager.getRandomChunk()).done(function(i)
 			{
@@ -179,18 +181,44 @@ function PetaPalManager(options, fileManager)
 	
 	};
 	
-	this.addWantedFile = function(hash, code)
+	this.addDownloadFile = function(hash, key)
 	{
+		
+		var promise = this._fileManager.addWantedFile(hash, key);
+			
+		promise.then($.proxy(this.getOwnWantedChunks, this)).then(function(chunks)
+		{
+			// rescan for wanted chunks
+			
+			console.log(chunks);
+		});
 		
 	
 	};
 	
-	this.init = function(options, fileManager)
+	this.deleteFile = function(file)
+	{
+		$.when(file.deleteMeta()).then($.proxy(this._fileManager.getAllFiles, this._fileManager)).done(function()
+		{
+			// remove 
+			$rootScope.$apply();
+		
+		});
+	
+	
+	};
+	
+	this.buildWantedChunkList = function()
+	{
+	
+	
+	
+	};
+	
+	
+	this.init = function($rootScope, $q, fileManager)
 	{
 		var self = this;
-		
-		// merge options
-		$.extend(this._options, options);
 		
 		// load pals
 		$.when(this.loadPetaPalsFromServer()).done(function(data)
@@ -198,6 +226,8 @@ function PetaPalManager(options, fileManager)
 			console.log(data, "New pals found");
 			
 			self.fillPetaPalConns();
+			
+			$rootScope.$apply();
 		
 		});
 		
@@ -207,6 +237,7 @@ function PetaPalManager(options, fileManager)
 		peer.on('open', function(id)
 		{
 			self.peerStatus = "OPEN";
+			$rootScope.$apply();
 		});
 		
 		peer.on('connection', function(conn)
@@ -232,7 +263,11 @@ function PetaPalManager(options, fileManager)
 			
 			self._petaPals.push(p);
 			
+			$rootScope.$apply();
+			
 		});
+		
+		
 		
 		/*
 		this._mainLoopIntervalId = window.setInterval(function()
@@ -244,5 +279,5 @@ function PetaPalManager(options, fileManager)
 	};
 	
 
-	this.init(options, fileManager);
+	this.init($rootScope, $q, fileManager);
 }

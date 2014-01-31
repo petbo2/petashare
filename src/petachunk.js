@@ -157,6 +157,12 @@ function PetaChunk(options)
 			{
 				self._options.db.get("chunks", self.hash).done(function(record)
 				{
+					if(record == undefined)
+					{
+						deferObj.reject({"error_code" : "FILE_NOT_FOUND"});
+							
+						return;
+					}
 					
 					self.content = record.content;
 					

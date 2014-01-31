@@ -10,13 +10,15 @@ function PetaFile(filestream, db)
 	
 	this.chunks = [];
 	
-	this.chunkIds = [];
+	this.chunkHashes = [];
 	
 	this.filename = null;
 	
 	this.keystone = null;
 	
 	this.keystoneHash = null;
+	
+	this.mode = null; // can be DOWNLOAD, UPLOAD or DONE
 	
 	this.options = {chunkSize: 1024 * 1024, salt: "LWprv6jvf/Q=", iv: "VCyAiPwIY54h2xiftUlN7Q=="};
 	
@@ -31,6 +33,8 @@ function PetaFile(filestream, db)
 			this.generateKey();
 		
 		var self = this;
+		
+		this.mode = "UPLOAD";
 		
 		return $.Deferred(function()
 		{
@@ -67,14 +71,14 @@ function PetaFile(filestream, db)
 						{
 						
 							self.chunks[chunkNum] = c;
-							self.chunkIds[chunkNum] = c.hash;
+							self.chunkHashes[chunkNum] = c.hash;
 							
 							outstandingWrites--;
 							
 							if(outstandingWrites == 0)
 							{
 								// all chunks have been written!
-								$.when(self.createKeystone()).done(function()
+								$.when(self.createKeystone()).then($.proxy(self.saveMeta, self)).done(function()
 								{
 									deferObj.resolve();
 								
@@ -125,6 +129,8 @@ function PetaFile(filestream, db)
 			
 			c.content = hashCrypt.crypt;
 			
+			console.log("Hash:", c.hash, "Key:", self.getKey());
+			
 			$.when(c.write()).done(function()
 			{
 				self.keystone = c;
@@ -144,11 +150,17 @@ function PetaFile(filestream, db)
 	
 	};
 	
-	this.loadFromKeystone = function(keystoneId, password)
+	this.loadFromKeystone = function(keystoneHash, key)
 	{
 		var self = this;
 		
-		if((! keystoneId) || (! password))
+		if(! keystoneHash)
+			keystoneHash = this.keystoneHash;
+		
+		if(! key)
+			key = this.getKey();
+		
+		if((! keystoneHash) || (! key))
 			return false; // can't load
 		
 		return $.Deferred(function()
@@ -158,10 +170,10 @@ function PetaFile(filestream, db)
 			// load keystone and decrypt
 			self.keystone = new PetaChunk({fs: self._fs, db: self._db});
 			
-			self.keystone.hash = keystoneId;
+			self.keystone.hash = keystoneHash;
 			self.keystone.type = "KEYSTONE";
 			
-			self.setKey(password);
+			self.setKey(key);
 			
 			$.when(self.keystone.read()).done(function(data)
 			{
@@ -182,16 +194,25 @@ function PetaFile(filestream, db)
 				
 				self.filename = obj.filename;
 				
-				self.chunkIds = obj.chunks;
+				self.chunkHashes = obj.chunks;
 				
 				self.chunks = [];
 				
-				deferObj.resolve();
+				deferObj.resolve(true);
 			
 			}).fail(function(error)
 			{
-				console.log("Error when opening keystone:",error);
-				deferObj.reject();
+				if(error.error_code == "FILE_NOT_FOUND")
+				{
+					// this is fine
+					deferObj.resolve(false);
+				}
+				else
+				{
+					console.log("Error when opening keystone:",error);
+					deferObj.reject();
+				}
+				
 			});
 		
 		});
@@ -202,7 +223,7 @@ function PetaFile(filestream, db)
 	{
 		var self = this;
 		
-		var totChunks = self.chunkIds.length;
+		var totChunks = self.chunkHashes.length;
 		
 		// no chunks? return false
 		if(totChunks == 0)
@@ -234,10 +255,10 @@ function PetaFile(filestream, db)
 		function readAndDecryptRecursive(i)
 		{
 			// if we have not already loaded chunk, load into memory
-			if((self.chunks[i] == undefined) || (self.chunks[i].hash != self.chunkIds[i]))
+			if((self.chunks[i] == undefined) || (self.chunks[i].hash != self.chunkHashes[i]))
 			{
 				self.chunks[i] = new PetaChunk({fs: self._fs, db: self._db});
-				self.chunks[i].hash = self.chunkIds[i];
+				self.chunks[i].hash = self.chunkHashes[i];
 				self.chunks[i].type = "DATA";
 				
 				// read in chunk
@@ -402,7 +423,7 @@ function PetaFile(filestream, db)
 				self.keystoneHash = self.keystone.hash;
 			
 			
-			self._db.put({name: 'files', keyPath: 'keystoneHash'}, {keystoneHash: self.keystoneHash, key: self._key, filename: self.filename}).done(function(res)
+			self._db.put({name: 'files', keyPath: 'keystoneHash'}, {keystoneHash: self.keystoneHash, key: self._key, filename: self.filename, mode: self.mode}).done(function(res)
 			{
 				deferObj.resolve();
 			
@@ -432,10 +453,11 @@ function PetaFile(filestream, db)
 			var deferObj = this;
 			
 			
-			self._options.db.get('files', self.keystoneHash).done(function(res)
+			self._db.get('files', self.keystoneHash).done(function(res)
 			{
 				self.setKey(res.key);
 				self.filename = res.filename;
+				self.mode = res.mode;
 				
 				$.when(self.loadFromKeystone(self.keystoneHash, self.getKey())).done(function(res)
 				{
@@ -449,6 +471,89 @@ function PetaFile(filestream, db)
 			});
 		
 		});
+	
+	};
+	
+	this.deleteMeta = function()
+	{
+		if(! this.keystoneHash)
+		{
+			console.log("Not enough information to delete file");
+			return;
+		}
+		
+		var self = this;
+		
+		return $.Deferred(function()
+		{
+			var deferObj = this;
+			
+			
+			self._db.remove('files', self.keystoneHash).done(function(res)
+			{
+				deferObj.resolve();
+			
+			}).fail(function(error)
+			{
+				deferObj.reject(error);
+			
+			});
+		
+		});
+		
+	};
+	
+	this.downloadFile = function(keystoneHash, key)
+	{
+		this.keystoneHash = keystoneHash;
+		this.setKey(key);
+		
+		this.mode = "DOWNLOAD";
+		
+		// save for later
+		this.saveMeta();
+	};
+	
+	// check to see what chunks we still need to download - make sure keystone is read first (if it exists)
+	// returns true if everything is downloaded
+	this.getOutstandingChunks = function(availableChunks)
+	{
+		var self = this;
+
+		/* 3 possibilities:
+		1) Haven't yet downloaded keystone, so only 1 chunk outstanding
+		2) Have got keystone, but don't have all the other chunks done
+		3) Have got everything
+		*/
+		
+		if($.inArray(self.keystoneHash, availableChunks) == -1)
+		{
+			// need to download keystone first
+			return [self.keystoneHash];
+		}
+		else if((self.keystone) && (self.chunkHashes.length > 0))
+		{
+			var needed = [];
+			for(var i = 0, l = self.chunkHashes.length; i < l; i++)
+			{
+				if($.inArray(self.chunkHashes[i], availableChunks) == -1)
+					needed.push(self.chunkHashes[i]);
+			}
+			
+			if(needed.length == 0)
+			{
+				// everything downloaded!
+				self.mode = "DONE";
+				return true;
+			}
+			else
+			{
+				return needed;	
+			}
+		}
+		
+		// should never hit here!
+		return false;
 	
 	};
 	
